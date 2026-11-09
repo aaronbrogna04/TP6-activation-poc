@@ -2,7 +2,7 @@
   "name": "@poc/activation-api",
   "version": "0.1.0",
   "private": true,
-  "description": "\u00danico punto de entrada: REST + agregador de la saga (y WebSocket en fase 2).",
+  "description": "Único punto de entrada: REST + WebSocket + agregador de la saga.",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -16,6 +16,8 @@
     "@nestjs/microservices": "11.2.8",
     "@nestjs/mongoose": "11.0.4",
     "@nestjs/platform-express": "11.2.8",
+    "@nestjs/platform-socket.io": "11.2.8",
+    "@nestjs/websockets": "11.2.8",
     "@poc/contracts": "workspace:*",
     "@poc/kafka-toolkit": "workspace:*",
     "class-transformer": "0.5.1",
@@ -23,7 +25,8 @@
     "kafkajs": "2.2.4",
     "mongoose": "8.24.7",
     "reflect-metadata": "0.2.2",
-    "rxjs": "7.8.2"
+    "rxjs": "7.8.2",
+    "socket.io": "4.8.3"
   },
   "devDependencies": {
     "@nestjs/cli": "11.0.24",

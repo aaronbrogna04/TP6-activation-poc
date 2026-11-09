@@ -2,48 +2,16 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { randomUUID } from 'node:crypto';
-import {
-  ACTIVATION_STATUS,
-  BillingEvent,
-  createEvent,
-  ProvisioningEvent,
-  SOURCES,
-  TOPICS,
-} from '@poc/contracts';
+import { ACTIVATION_STATUS, createEvent, SOURCES, TOPICS } from '@poc/contracts';
 import { EventPublisher } from '@poc/kafka-toolkit';
-import { Activation, HistoryEntry, StepResult } from './activation.schema';
+import { Activation, HistoryEntry } from './activation.schema';
+import { toView } from './activation.view';
+import { ActivationsGateway } from './activations.gateway';
 import { CreateActivationDto } from './create-activation.dto';
-import { decide, StepName } from './saga';
+import { historyOf, ResultEvent, toStep } from './history';
+import { decide } from './saga';
 
-type ResultEvent = BillingEvent | ProvisioningEvent;
-
-/** Traduce un evento de resultado al paso de la saga que representa (o null si no afecta la saga). */
-function toStep(event: ResultEvent): { step: StepName; result: StepResult } | null {
-  const at = event.occurredAt;
-  switch (event.eventType) {
-    case 'BillingAccountCreated':
-      return { step: 'billing', result: { status: 'OK', at, eventType: event.eventType } };
-    case 'BillingFailed':
-      return { step: 'billing', result: { status: 'FAILED', at, eventType: event.eventType, reason: event.payload.reason } };
-    case 'ProvisioningCompleted':
-      return { step: 'provisioning', result: { status: 'OK', at, eventType: event.eventType } };
-    case 'ProvisioningFailed':
-      return {
-        step: 'provisioning',
-        result: { status: 'FAILED', at, eventType: event.eventType, reason: event.payload.reason },
-      };
-    default:
-      // BillingAccountCancelled (compensación): solo se registra en el historial.
-      return null;
-  }
-}
-
-const historyOf = (e: { eventId: string; eventType: string; source: string; occurredAt: string }): HistoryEntry => ({
-  eventId: e.eventId,
-  eventType: e.eventType,
-  source: e.source,
-  at: e.occurredAt,
-});
+const OPEN = [ACTIVATION_STATUS.PENDING, ACTIVATION_STATUS.IN_PROGRESS];
 
 @Injectable()
 export class ActivationsService {
@@ -52,6 +20,7 @@ export class ActivationsService {
   constructor(
     @InjectModel(Activation.name) private readonly activations: Model<Activation>,
     private readonly publisher: EventPublisher,
+    private readonly gateway: ActivationsGateway,
   ) {}
 
   /** RF-02 / RF-03: guarda PENDING, publica ActivationRequested y responde sin esperar a nadie. */
@@ -65,15 +34,16 @@ export class ActivationsService {
       source: SOURCES.ACTIVATION_API,
       payload: { planId: dto.planId, channel: dto.channel ?? 'web', simulateFailure },
     });
+    const entry = historyOf(event);
 
-    await this.activations.create({
+    const created = await this.activations.create({
       _id: activationId,
       customerId: dto.customerId,
       planId: dto.planId,
       status: ACTIVATION_STATUS.PENDING,
       simulateFailure,
       steps: {},
-      history: [historyOf(event)],
+      history: [entry],
     });
 
     // TODO(fase 4 · outbox transaccional): publicación directa después de guardar.
@@ -83,33 +53,40 @@ export class ActivationsService {
     // y un proceso aparte lo publica cada 500 ms (documento §08, decisión 3).
     await this.publisher.publish(TOPICS.ACTIVATION_REQUESTED, event);
 
+    this.gateway.emitUpdate(toView(created.toObject()), entry);
     this.logger.log(`[${activationId}] activación creada (customer=${dto.customerId}, plan=${dto.planId}, simulateFailure=${simulateFailure})`);
     return { activationId, status: ACTIVATION_STATUS.PENDING };
   }
 
-  /** RF-09 */
+  /** RF-09: estado actual, resultados parciales (steps) e historial completo de eventos. */
   async findOne(id: string) {
     const doc = await this.activations.findById(id).lean();
     if (!doc) throw new NotFoundException(`activación ${id} no existe`);
-    const { _id, ...rest } = doc;
-    return { activationId: _id, ...rest };
+    return toView(doc);
+  }
+
+  /** Activaciones recientes (lista seleccionable de la demo-ui), la más nueva primero. */
+  async findRecent(limit: number) {
+    const docs = await this.activations.find().sort({ createdAt: -1 }).limit(limit).lean();
+    return docs.map(toView);
   }
 
   /**
    * Agregador de la saga (RF-04, RF-05, RF-06).
    * Updates atómicos y condicionales: seguro ante resultados concurrentes o instancias escaladas.
+   * Cada cambio se empuja a la UI por WebSocket (RF-08).
    * TODO(fase 3): idempotencia por eventId en processed_events, en la misma transacción.
    */
   async applyResult(event: ResultEvent): Promise<void> {
     const id = event.correlationId;
     const mapped = toStep(event);
-    const entry = historyOf(event);
 
     // 1) Registrar el resultado solo si la activación sigue abierta.
+    const entry = historyOf(event);
     const open = mapped
       ? await this.activations
           .findOneAndUpdate(
-            { _id: id, status: { $in: [ACTIVATION_STATUS.PENDING, ACTIVATION_STATUS.IN_PROGRESS] } },
+            { _id: id, status: { $in: OPEN } },
             {
               $set: { [`steps.${mapped.step}`]: mapped.result, status: ACTIVATION_STATUS.IN_PROGRESS },
               $push: { history: entry },
@@ -120,18 +97,24 @@ export class ActivationsService {
       : null;
 
     if (!open) {
-      // Activación final (o evento sin efecto en la saga): solo queda en el historial.
-      const res = await this.activations.updateOne(
-        { _id: id },
-        { $push: { history: { ...entry, ignored: mapped !== null } } },
-      );
-      if (res.matchedCount === 0) {
+      // Activación final (resultado tardío → ignored) o evento sin efecto en la saga
+      // (BillingAccountCancelled, la compensación): solo queda en el historial.
+      const late = historyOf(event, mapped !== null);
+      const doc = await this.activations
+        .findOneAndUpdate({ _id: id }, { $push: { history: late } }, { new: true })
+        .lean();
+      if (!doc) {
         this.logger.warn(`[${id}] ${event.eventType} para una activación desconocida; se descarta`);
-      } else if (mapped) {
+        return;
+      }
+      if (late.ignored) {
         this.logger.log(`[${id}] ${event.eventType} llegó con la activación ya final; solo se registra en history`);
       }
+      this.emit(doc, late);
       return;
     }
+
+    this.emit(open, entry);
 
     // 2) Decidir.
     const decision = decide(open);
@@ -159,15 +142,24 @@ export class ActivationsService {
             payload: { planId: open.planId, failedStep: decision.failedStep, reason: decision.reason },
           });
 
-    const won = await this.activations.findOneAndUpdate(
-      { _id: id, status: ACTIVATION_STATUS.IN_PROGRESS },
-      { $set: { status: final }, $push: { history: historyOf(outcome) } },
-    );
+    const outcomeEntry = historyOf(outcome);
+    const won = await this.activations
+      .findOneAndUpdate(
+        { _id: id, status: ACTIVATION_STATUS.IN_PROGRESS },
+        { $set: { status: final }, $push: { history: outcomeEntry } },
+        { new: true },
+      )
+      .lean();
     if (!won) return; // otra entrega/instancia ya cerró la activación
 
     // TODO(fase 4 · outbox): mismo riesgo que en create(): si se cae acá, el estado queda final
     // pero ActivationCompleted/ActivationFailed no se publica.
     await this.publisher.publish(TOPICS.ACTIVATION_EVENTS, outcome);
+    this.emit(won, outcomeEntry);
     this.logger.log(`[${id}] activación ${final}`);
+  }
+
+  private emit(doc: Activation, entry: HistoryEntry): void {
+    this.gateway.emitUpdate(toView(doc), entry);
   }
 }

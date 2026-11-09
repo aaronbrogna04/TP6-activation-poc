@@ -1,4 +1,4 @@
-# POC Activación de Servicios con Kafka — Fase 1.
+# POC Activación de Servicios con Kafka — Fase 2.
 # `docker compose up -d --build` levanta todo sin pasos manuales (RNF-01).
 # Diseñado para una máquina de 7,5 GB: mem_limit en cada contenedor y heap de las JVM acotado.
 name: activation-poc
@@ -113,9 +113,10 @@ services:
     logging: *logging
 
   mailhog:
-    image: mailhog/mailhog:v1.0.1 # lo usa notification-service desde la fase 2
+    image: mailhog/mailhog:v1.0.1
     ports:
-      - "8025:8025"
+      - "8025:8025" # bandeja web + API (/api/v2/messages)
+      - "127.0.0.1:1025:1025" # SMTP, solo para correr notification-service en el host (pnpm dev:notification)
     mem_limit: 64m
     logging: *logging
 
@@ -163,6 +164,26 @@ services:
       KAFKA_CLIENT_ID: provisioning-service
       KAFKA_GROUP_ID: provisioning-svc
       MONGO_URI: mongodb://mongo:27017/provisioning?replicaSet=rs0
+
+  notification-service:
+    <<: *node-app
+    build:
+      <<: *node-build
+      args: { APP: notification-service }
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      KAFKA_CLIENT_ID: notification-service
+      KAFKA_GROUP_ID: notification-svc
+      MONGO_URI: mongodb://mongo:27017/notification?replicaSet=rs0
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
 
   demo-ui:
     build:

@@ -19,6 +19,8 @@ export interface HistoryEntry {
   eventType: string;
   source: string;
   at: string;
+  /** Resumen del payload (cuenta, orden, motivo del fallo...). */
+  detail?: string;
   /** true si llegó cuando la activación ya era final: se registra pero no cambia el estado. */
   ignored?: boolean;
 }

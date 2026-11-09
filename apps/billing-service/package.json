@@ -2,7 +2,7 @@
   "name": "@poc/billing-service",
   "version": "0.1.0",
   "private": true,
-  "description": "billing-service: consume activation.requested y publica en billing.events.",
+  "description": "billing-service: consume activation.requested (crea la cuenta) y activation.events (compensación); publica en billing.events.",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

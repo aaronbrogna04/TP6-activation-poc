@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Demo UI. Fase 1: formulario mínimo (POST + consultar estado). Fase 2: timeline por WebSocket.",
+  "description": "Demo UI: formulario Contratar plan, activaciones recientes y timeline en vivo por WebSocket.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "react": "19.2.9",
-    "react-dom": "19.2.9"
+    "react-dom": "19.2.9",
+    "socket.io-client": "4.8.3"
   },
   "devDependencies": {
     "@types/react": "19.2.7",

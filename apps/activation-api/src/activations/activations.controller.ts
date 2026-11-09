@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post } from '@nestjs/common';
+import { Body, Controller, DefaultValuePipe, Get, HttpCode, HttpStatus, Param, ParseIntPipe, Post, Query } from '@nestjs/common';
 import { ActivationsService } from './activations.service';
 import { CreateActivationDto } from './create-activation.dto';
 
@@ -11,6 +11,12 @@ export class ActivationsController {
   @HttpCode(HttpStatus.ACCEPTED)
   create(@Body() dto: CreateActivationDto) {
     return this.service.create(dto);
+  }
+
+  /** Activaciones recientes, para la lista seleccionable de la demo-ui (no es un RF del documento). */
+  @Get()
+  findRecent(@Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number) {
+    return this.service.findRecent(Math.min(Math.max(limit, 1), 100));
   }
 
   /** RF-09: estado actual + historial de eventos. */
