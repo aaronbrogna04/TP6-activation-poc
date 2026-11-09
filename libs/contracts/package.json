@@ -1,0 +1,16 @@
+{
+  "name": "@poc/contracts",
+  "version": "1.0.0",
+  "description": "Contratos de eventos (única fuente de verdad). La versión del paquete versiona el conjunto de contratos; cada evento lleva además su propio campo version.",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}

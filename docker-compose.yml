@@ -1,0 +1,184 @@
+# POC Activación de Servicios con Kafka — Fase 1.
+# `docker compose up -d --build` levanta todo sin pasos manuales (RNF-01).
+# Diseñado para una máquina de 7,5 GB: mem_limit en cada contenedor y heap de las JVM acotado.
+name: activation-poc
+
+x-node-build: &node-build
+  context: .
+  dockerfile: Dockerfile
+
+x-node-app: &node-app
+  restart: on-failure
+  mem_limit: 200m
+  depends_on:
+    kafka-init:
+      condition: service_completed_successfully
+    mongo:
+      condition: service_healthy
+  logging: &logging
+    driver: json-file
+    options: { max-size: "10m", max-file: "2" }
+
+services:
+  # ---------------------------------------------------------------- infraestructura
+  kafka:
+    image: apache/kafka:3.9.2 # 3.9.x y no 4.x: Kafka 4 quitó versiones viejas del protocolo (KIP-896) y kafkajs puede no conectar
+    hostname: kafka
+    ports:
+      - "9092:9092" # listener EXTERNAL para apps corriendo en el host
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller # KRaft, un solo nodo, sin ZooKeeper
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false" # los topics los crea solo kafka-init
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      start_period: 60s
+      start_interval: 3s
+      interval: 30s
+      timeout: 15s
+      retries: 5
+    mem_limit: 1g
+    logging: *logging
+
+  kafka-init:
+    image: apache/kafka:3.9.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/create-topics.sh"]
+    environment:
+      BOOTSTRAP_SERVER: kafka:19092
+      KAFKA_HEAP_OPTS: "-Xmx96m"
+    volumes:
+      - ./docker/create-topics.sh:/create-topics.sh:ro
+    restart: "no"
+    mem_limit: 256m
+    logging: *logging
+
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.5.0
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: activation-poc
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+      DYNAMIC_CONFIG_ENABLED: "false"
+      JAVA_OPTS: "-Xmx256m -Xms64m -XX:+UseSerialGC"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+    mem_limit: 512m
+    logging: *logging
+
+  mongo:
+    image: mongo:7.0.45 # 8.0+ no arranca en kernels >= 6.19 (SERVER-121912, tcmalloc/rseq); ver CLAUDE.md
+    hostname: mongo
+    command: ["--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.25"]
+    ports:
+      - "27017:27017" # desde el host: ?replicaSet=rs0&directConnection=true
+    volumes:
+      - mongo-data:/data/db
+    # Replica set de un nodo (transacciones para idempotencia/outbox). El healthcheck lo inicializa
+    # la primera vez y solo da healthy cuando el nodo es PRIMARY.
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - "try { rs.status() } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongo:27017' }] }) }; if (!db.hello().isWritablePrimary) quit(1)"
+      start_period: 60s
+      start_interval: 2s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    mem_limit: 700m
+    logging: *logging
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1 # lo usa notification-service desde la fase 2
+    ports:
+      - "8025:8025"
+    mem_limit: 64m
+    logging: *logging
+
+  # ---------------------------------------------------------------- apps
+  activation-api:
+    <<: *node-app
+    build:
+      <<: *node-build
+      args: { APP: activation-api }
+    ports:
+      - "3000:3000"
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      KAFKA_CLIENT_ID: activation-api
+      KAFKA_GROUP_ID: activation-api
+      MONGO_URI: mongodb://mongo:27017/activation?replicaSet=rs0
+      CORS_ORIGIN: http://localhost:5173
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health"]
+      start_period: 30s
+      start_interval: 2s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # billing y provisioning: sin container_name ni ports → escalables (escenario 4: --scale billing-service=2)
+  billing-service:
+    <<: *node-app
+    build:
+      <<: *node-build
+      args: { APP: billing-service }
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      KAFKA_CLIENT_ID: billing-service
+      KAFKA_GROUP_ID: billing-svc
+      MONGO_URI: mongodb://mongo:27017/billing?replicaSet=rs0
+
+  provisioning-service:
+    <<: *node-app
+    build:
+      <<: *node-build
+      args: { APP: provisioning-service }
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      KAFKA_CLIENT_ID: provisioning-service
+      KAFKA_GROUP_ID: provisioning-svc
+      MONGO_URI: mongodb://mongo:27017/provisioning?replicaSet=rs0
+
+  demo-ui:
+    build:
+      context: .
+      dockerfile: apps/demo-ui/Dockerfile
+      args:
+        VITE_API_URL: http://localhost:3000 # la usa el navegador, no el contenedor
+    ports:
+      - "5173:5173"
+    depends_on:
+      activation-api:
+        condition: service_healthy
+    restart: on-failure
+    mem_limit: 32m
+    logging: *logging
+
+volumes:
+  kafka-data:
+  mongo-data:

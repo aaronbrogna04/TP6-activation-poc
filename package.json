@@ -1,0 +1,17 @@
+{
+  "name": "activation-poc",
+  "private": true,
+  "version": "0.1.0",
+  "description": "POC Activación de Servicios con Kafka (TP6 Sistemas Distribuidos 2026)",
+  "packageManager": "pnpm@12.18.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r --if-present test",
+    "dev:infra": "docker compose up -d kafka kafka-init kafka-ui mongo mailhog",
+    "dev:api": "pnpm --filter @poc/activation-api start:dev",
+    "dev:billing": "pnpm --filter @poc/billing-service start:dev",
+    "dev:provisioning": "pnpm --filter @poc/provisioning-service start:dev",
+    "dev:ui": "pnpm --filter @poc/demo-ui dev"
+  }
+}
