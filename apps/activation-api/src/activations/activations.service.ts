@@ -3,7 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { ACTIVATION_STATUS, createEvent, SOURCES, TOPICS } from '@poc/contracts';
-import { EventPublisher } from '@poc/kafka-toolkit';
+import { EventPublisher, Tx } from '@poc/kafka-toolkit';
 import { Activation, HistoryEntry } from './activation.schema';
 import { toView } from './activation.view';
 import { ActivationsGateway } from './activations.gateway';
@@ -73,11 +73,13 @@ export class ActivationsService {
 
   /**
    * Agregador de la saga (RF-04, RF-05, RF-06).
-   * Updates atómicos y condicionales: seguro ante resultados concurrentes o instancias escaladas.
-   * Cada cambio se empuja a la UI por WebSocket (RF-08).
-   * TODO(fase 3): idempotencia por eventId en processed_events, en la misma transacción.
+   * Corre dentro de la transacción de EventConsumer (processed_events + estos updates): un resultado repetido
+   * no vuelve a tocar la activación. Los updates son condicionales sobre el mismo documento, así que dos
+   * resultados concurrentes (o instancias escaladas) chocan y Mongo reintenta uno con el estado fresco.
+   * El evento final y los mensajes WebSocket (RF-08) salen recién después del commit.
    */
-  async applyResult(event: ResultEvent): Promise<void> {
+  async applyResult(event: ResultEvent, tx: Tx): Promise<void> {
+    const { session } = tx;
     const id = event.correlationId;
     const mapped = toStep(event);
 
@@ -91,7 +93,7 @@ export class ActivationsService {
               $set: { [`steps.${mapped.step}`]: mapped.result, status: ACTIVATION_STATUS.IN_PROGRESS },
               $push: { history: entry },
             },
-            { new: true },
+            { new: true, session },
           )
           .lean()
       : null;
@@ -101,7 +103,7 @@ export class ActivationsService {
       // (BillingAccountCancelled, la compensación): solo queda en el historial.
       const late = historyOf(event, mapped !== null);
       const doc = await this.activations
-        .findOneAndUpdate({ _id: id }, { $push: { history: late } }, { new: true })
+        .findOneAndUpdate({ _id: id }, { $push: { history: late } }, { new: true, session })
         .lean();
       if (!doc) {
         this.logger.warn(`[${id}] ${event.eventType} para una activación desconocida; se descarta`);
@@ -110,11 +112,11 @@ export class ActivationsService {
       if (late.ignored) {
         this.logger.log(`[${id}] ${event.eventType} llegó con la activación ya final; solo se registra en history`);
       }
-      this.emit(doc, late);
+      tx.afterCommit(() => this.emit(doc, late));
       return;
     }
 
-    this.emit(open, entry);
+    tx.afterCommit(() => this.emit(open, entry));
 
     // 2) Decidir.
     const decision = decide(open);
@@ -123,7 +125,7 @@ export class ActivationsService {
       return;
     }
 
-    // 3) Transición final: solo publica quien gana el update condicional (nunca dos veces).
+    // 3) Transición final: condicional, en la misma transacción.
     const final = decision.kind === 'COMPLETE' ? ACTIVATION_STATUS.ACTIVE : ACTIVATION_STATUS.FAILED;
     const outcome =
       decision.kind === 'COMPLETE'
@@ -147,16 +149,18 @@ export class ActivationsService {
       .findOneAndUpdate(
         { _id: id, status: ACTIVATION_STATUS.IN_PROGRESS },
         { $set: { status: final }, $push: { history: outcomeEntry } },
-        { new: true },
+        { new: true, session },
       )
       .lean();
     if (!won) return; // otra entrega/instancia ya cerró la activación
 
-    // TODO(fase 4 · outbox): mismo riesgo que en create(): si se cae acá, el estado queda final
-    // pero ActivationCompleted/ActivationFailed no se publica.
-    await this.publisher.publish(TOPICS.ACTIVATION_EVENTS, outcome);
-    this.emit(won, outcomeEntry);
-    this.logger.log(`[${id}] activación ${final}`);
+    // TODO(fase 4 · outbox): EventConsumer publica después del commit de Mongo. Si se cae entre los dos,
+    // el estado queda final pero ActivationCompleted/ActivationFailed no se publica.
+    tx.publish(TOPICS.ACTIVATION_EVENTS, outcome);
+    tx.afterCommit(() => {
+      this.emit(won, outcomeEntry);
+      this.logger.log(`[${id}] activación ${final}`);
+    });
   }
 
   private emit(doc: Activation, entry: HistoryEntry): void {

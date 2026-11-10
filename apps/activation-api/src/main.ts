@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { CONSUMER_GROUPS } from '@poc/contracts';
-import { kafkaEnv, kafkaServerOptions } from '@poc/kafka-toolkit';
+import { initGroupOffsets, kafkaEnv, kafkaServerOptions } from '@poc/kafka-toolkit';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -13,8 +13,9 @@ async function bootstrap() {
   app.enableShutdownHooks();
 
   // App híbrida: HTTP + consumidor de billing.events / provisioning.events (group activation-api).
-  app.connectMicroservice(kafkaServerOptions(env), { inheritAppConfig: true });
+  const consumer = app.connectMicroservice(kafkaServerOptions(env), { inheritAppConfig: true });
   await app.startAllMicroservices();
+  await initGroupOffsets(consumer, env.groupId);
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);

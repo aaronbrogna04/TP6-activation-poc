@@ -1,4 +1,4 @@
-# POC Activación de Servicios con Kafka — Fase 2.
+# POC Activación de Servicios con Kafka — Fase 3.
 # `docker compose up -d --build` levanta todo sin pasos manuales (RNF-01).
 # Diseñado para una máquina de 7,5 GB: mem_limit en cada contenedor y heap de las JVM acotado.
 name: activation-poc
@@ -184,6 +184,32 @@ services:
       MONGO_URI: mongodb://mongo:27017/notification?replicaSet=rs0
       SMTP_HOST: mailhog
       SMTP_PORT: "1025"
+
+  # Consume los 4 topics desde el inicio y guarda cada evento en event_log; no publica nada (RF-10).
+  crm-analytics-service:
+    <<: *node-app
+    build:
+      <<: *node-build
+      args: { APP: crm-analytics-service }
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      KAFKA_CLIENT_ID: crm-analytics-service
+      KAFKA_GROUP_ID: crm-analytics
+      MONGO_URI: mongodb://mongo:27017/crm?replicaSet=rs0
+
+  # Escenario 5: solo con `docker compose --profile loyalty up -d loyalty-service`.
+  # Group nuevo (loyalty-svc) con auto.offset.reset=earliest: procesa todo el historial de activation.events.
+  loyalty-service:
+    <<: *node-app
+    profiles: ["loyalty"]
+    build:
+      <<: *node-build
+      args: { APP: loyalty-service }
+    environment:
+      KAFKA_BROKERS: kafka:19092
+      KAFKA_CLIENT_ID: loyalty-service
+      KAFKA_GROUP_ID: loyalty-svc
+      MONGO_URI: mongodb://mongo:27017/loyalty?replicaSet=rs0
 
   demo-ui:
     build:

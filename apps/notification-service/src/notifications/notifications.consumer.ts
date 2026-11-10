@@ -1,19 +1,21 @@
-import { Controller, Logger } from '@nestjs/common';
-import { Ctx, EventPattern, KafkaContext, Payload } from '@nestjs/microservices';
-import { ActivationEvent, TOPICS } from '@poc/contracts';
-import { commitAfter, logReceived } from '@poc/kafka-toolkit';
+import { Controller } from '@nestjs/common';
+import { Ctx, EventPattern, KafkaContext } from '@nestjs/microservices';
+import { TOPICS } from '@poc/contracts';
+import { EventConsumer } from '@poc/kafka-toolkit';
 import { NotificationsService } from './notifications.service';
 
-/** Consumer group notification-svc. */
+/** Consumer group notification-svc. Parseo, contrato, idempotencia, reintentos, DLQ y commit: EventConsumer. */
 @Controller()
 export class NotificationsConsumer {
-  private readonly logger = new Logger(NotificationsConsumer.name);
-
-  constructor(private readonly service: NotificationsService) {}
+  constructor(
+    private readonly consumer: EventConsumer,
+    private readonly service: NotificationsService,
+  ) {}
 
   @EventPattern(TOPICS.ACTIVATION_EVENTS)
-  onActivationEvent(@Payload() event: ActivationEvent, @Ctx() ctx: KafkaContext) {
-    logReceived(this.logger, event, ctx);
-    return commitAfter(ctx, () => this.service.onActivationEvent(event));
+  onActivationEvent(@Ctx() ctx: KafkaContext) {
+    return this.consumer.process(ctx, ['ActivationCompleted', 'ActivationFailed'], (e, tx) =>
+      this.service.onActivationEvent(e, tx),
+    );
   }
 }

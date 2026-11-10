@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { ActivationFailure, ActivationFailureSchema } from './activation-failure.schema';
+import { ActivationMarker, ActivationMarkerSchema } from './activation-marker.schema';
 import { BillingAccount, BillingAccountSchema } from './billing-account.schema';
 import { BillingConsumer } from './billing.consumer';
 import { BillingService } from './billing.service';
@@ -9,7 +9,7 @@ import { BillingService } from './billing.service';
   imports: [
     MongooseModule.forFeature([
       { name: BillingAccount.name, schema: BillingAccountSchema },
-      { name: ActivationFailure.name, schema: ActivationFailureSchema },
+      { name: ActivationMarker.name, schema: ActivationMarkerSchema },
     ]),
   ],
   controllers: [BillingConsumer],

@@ -1,25 +1,28 @@
-import { Controller, Logger } from '@nestjs/common';
-import { Ctx, EventPattern, KafkaContext, Payload } from '@nestjs/microservices';
-import { BillingEvent, ProvisioningEvent, TOPICS } from '@poc/contracts';
-import { commitAfter, logReceived } from '@poc/kafka-toolkit';
+import { Controller } from '@nestjs/common';
+import { Ctx, EventPattern, KafkaContext } from '@nestjs/microservices';
+import { TOPICS } from '@poc/contracts';
+import { EventConsumer } from '@poc/kafka-toolkit';
 import { ActivationsService } from './activations.service';
 
 /** Consumer group activation-api: junta los resultados de billing y provisioning. */
 @Controller()
 export class ResultsConsumer {
-  private readonly logger = new Logger(ResultsConsumer.name);
-
-  constructor(private readonly service: ActivationsService) {}
+  constructor(
+    private readonly consumer: EventConsumer,
+    private readonly service: ActivationsService,
+  ) {}
 
   @EventPattern(TOPICS.BILLING_EVENTS)
-  onBilling(@Payload() event: BillingEvent, @Ctx() ctx: KafkaContext) {
-    logReceived(this.logger, event, ctx);
-    return commitAfter(ctx, () => this.service.applyResult(event));
+  onBilling(@Ctx() ctx: KafkaContext) {
+    return this.consumer.process(ctx, ['BillingAccountCreated', 'BillingFailed', 'BillingAccountCancelled'], (e, tx) =>
+      this.service.applyResult(e, tx),
+    );
   }
 
   @EventPattern(TOPICS.PROVISIONING_EVENTS)
-  onProvisioning(@Payload() event: ProvisioningEvent, @Ctx() ctx: KafkaContext) {
-    logReceived(this.logger, event, ctx);
-    return commitAfter(ctx, () => this.service.applyResult(event));
+  onProvisioning(@Ctx() ctx: KafkaContext) {
+    return this.consumer.process(ctx, ['ProvisioningCompleted', 'ProvisioningFailed'], (e, tx) =>
+      this.service.applyResult(e, tx),
+    );
   }
 }

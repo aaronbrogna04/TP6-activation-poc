@@ -20,6 +20,8 @@ export const CONSUMER_GROUPS = {
   PROVISIONING: 'provisioning-svc',
   NOTIFICATION: 'notification-svc',
   CRM_ANALYTICS: 'crm-analytics',
+  /** Escenario 5: group nuevo que lee activation.events desde el inicio. */
+  LOYALTY: 'loyalty-svc',
 } as const;
 
 /** Headers que acompañan a cada mensaje (además del sobre en el value). */
@@ -28,3 +30,21 @@ export const HEADERS = {
   CORRELATION_ID: 'correlationId',
   EVENT_ID: 'eventId',
 } as const;
+
+/**
+ * Headers que agrega el consumidor al publicar el mensaje original en <topic>.dlq
+ * (documento §08, decisión 2: el motivo del error va en los headers; el value queda intacto).
+ */
+export const DLQ_HEADERS = {
+  ERROR: 'dlq-error',
+  /** INVALID_MESSAGE (no se pudo parsear / no cumple el contrato) o PROCESSING_ERROR (falló tras los reintentos). */
+  REASON: 'dlq-reason',
+  SERVICE: 'dlq-service',
+  INSTANCE: 'dlq-instance',
+  ATTEMPTS: 'dlq-attempts',
+  ORIGINAL_TOPIC: 'dlq-original-topic',
+  ORIGINAL_PARTITION: 'dlq-original-partition',
+  ORIGINAL_OFFSET: 'dlq-original-offset',
+  FAILED_AT: 'dlq-failed-at',
+} as const;
+

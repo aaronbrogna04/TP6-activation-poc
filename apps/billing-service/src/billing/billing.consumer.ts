@@ -1,28 +1,25 @@
-import { Controller, Logger } from '@nestjs/common';
-import { Ctx, EventPattern, KafkaContext, Payload } from '@nestjs/microservices';
-import { ActivationEvent, ActivationRequested, TOPICS } from '@poc/contracts';
-import { commitAfter, logReceived } from '@poc/kafka-toolkit';
+import { Controller } from '@nestjs/common';
+import { Ctx, EventPattern, KafkaContext } from '@nestjs/microservices';
+import { TOPICS } from '@poc/contracts';
+import { EventConsumer } from '@poc/kafka-toolkit';
 import { BillingService } from './billing.service';
 
-/** Consumer group billing-svc. */
+/** Consumer group billing-svc. Parseo, contrato, idempotencia, reintentos, DLQ y commit: EventConsumer. */
 @Controller()
 export class BillingConsumer {
-  private readonly logger = new Logger(BillingConsumer.name);
-
-  constructor(private readonly service: BillingService) {}
+  constructor(
+    private readonly consumer: EventConsumer,
+    private readonly service: BillingService,
+  ) {}
 
   @EventPattern(TOPICS.ACTIVATION_REQUESTED)
-  onActivationRequested(@Payload() event: ActivationRequested, @Ctx() ctx: KafkaContext) {
-    logReceived(this.logger, event, ctx);
-    return commitAfter(ctx, () => this.service.onActivationRequested(event));
+  onActivationRequested(@Ctx() ctx: KafkaContext) {
+    return this.consumer.process(ctx, ['ActivationRequested'], (e, tx) => this.service.onActivationRequested(e, tx));
   }
 
   /** Compensación (RF-06): ActivationFailed anula la cuenta. ActivationCompleted no requiere nada. */
   @EventPattern(TOPICS.ACTIVATION_EVENTS)
-  onActivationEvent(@Payload() event: ActivationEvent, @Ctx() ctx: KafkaContext) {
-    logReceived(this.logger, event, ctx);
-    return commitAfter(ctx, async () => {
-      if (event.eventType === 'ActivationFailed') await this.service.onActivationFailed(event);
-    });
+  onActivationEvent(@Ctx() ctx: KafkaContext) {
+    return this.consumer.process(ctx, ['ActivationFailed'], (e, tx) => this.service.onActivationFailed(e, tx));
   }
 }

@@ -6,6 +6,8 @@ export interface Mail {
   subject: string;
   text: string;
   html: string;
+  /** Message-ID fijo (derivado del eventId) para reconocer un reenvío. */
+  messageId?: string;
 }
 
 /** SMTP hacia Mailhog (mailhog:1025 en Compose; localhost:1025 desde el host). Sin auth ni TLS. */
@@ -18,6 +20,10 @@ export class Mailer implements OnModuleDestroy {
     port: Number(process.env.SMTP_PORT ?? 1025),
     secure: false,
     ignoreTLS: true,
+    // Cortos: el envío corre dentro de la transacción y entre reintentos de EventConsumer.
+    connectionTimeout: 5000,
+    greetingTimeout: 5000,
+    socketTimeout: 10000,
   });
 
   async send(mail: Mail): Promise<string> {

@@ -13,6 +13,8 @@
     "dev:billing": "pnpm --filter @poc/billing-service start:dev",
     "dev:provisioning": "pnpm --filter @poc/provisioning-service start:dev",
     "dev:notification": "SMTP_HOST=localhost pnpm --filter @poc/notification-service start:dev",
+    "dev:crm": "pnpm --filter @poc/crm-analytics-service start:dev",
+    "dev:loyalty": "pnpm --filter @poc/loyalty-service start:dev",
     "dev:ui": "pnpm --filter @poc/demo-ui dev"
   }
 }

@@ -3,3 +3,8 @@ export * from './options';
 export * from './publisher';
 export * from './module';
 export * from './consumer';
+export * from './retry';
+export * from './dlq';
+export * from './processed-event';
+export * from './event-consumer';
+export * from './offsets';
